@@ -1,0 +1,1 @@
+print("{:02x}".format(ord("0")))

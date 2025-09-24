@@ -1,0 +1,1 @@
+# Will consider migrating opcodes into this file if it gets too cumberson for Emulation.py
