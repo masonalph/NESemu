@@ -1,10 +1,11 @@
 from Emulation import Emulation
-
+from customTypes import *
 def main():
-    halt = False
-    filepath = "2_ReadWrite.nes"
-    emu_instance = Emulation(filepath)
+
+    filepath = "4_TheStack.nes"
+    emu_instance = Emulation(filepath, debug=True)
     emu_instance.run_emu()
+
 
 if __name__ == '__main__':
     main()
