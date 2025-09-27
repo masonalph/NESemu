@@ -30,7 +30,11 @@ class Emulation:
             self.addSpace += (chunk for chunk in data.read())
 
         # Move the Program Counter to correct space (we have to do a little math to convert to little endian)
-        self.pgmctr = self.addSpace[0xFFFC] + self.addSpace[0xFFFD]*256
+
+        if debug:
+            self.pgmctr = 0x8000
+        else:
+            self.pgmctr = self.addSpace[0xFFFC] + self.addSpace[0xFFFD] * 256
 
     def push(self, value):
         self.write(0x100 + self.stackptr, value)
@@ -48,6 +52,7 @@ class Emulation:
         while not self.halt:
             self.opcode = self.addSpace[self.pgmctr]
             self.pgmctr += 0x1
+            print(self.regA)
             if self.debug:
                 print("op:" + hex(self.opcode),  "pgmctr:" + hex(self.pgmctr),
                       "regA:" + hex(self.regA), "0x0:" + hex(self.addSpace[0x0]))
@@ -91,6 +96,9 @@ class Emulation:
                         self.vdebt += 1  # Branch takes extra cycle if crossing page boundary
                     self.vdebt += 1  # Takes 1 additional cycles if nonzero
                 self.vdebt += 2  # Takes 2 cycles no matter what
+            case 0x18: # Clear Carry
+                self.flag_Carry = False; self.vdebt += 2
+                return
             case 0x20: # Jump to Subroutine
                 tlow = self.read(); self.pgmctr += 1
                 thigh = self.read()
@@ -106,6 +114,9 @@ class Emulation:
                         self.vdebt += 1  # Branch takes extra cycle if crossing page boundary
                     self.vdebt += 1  # Takes 1 additional cycles if nonzero
                 self.vdebt += 2  # Takes 2 cycles no matter what
+            case 0x38: # Set Carry
+                self.flag_Carry = True; self.vdebt += 2
+                return
             case 0x48: # Push Accumulator
                 self.push(self.regA); self.vdebt += 3
                 return
@@ -118,6 +129,9 @@ class Emulation:
                         self.vdebt += 1  # Branch takes extra cycle if crossing page boundary
                     self.vdebt += 1  # Takes 1 additional cycles if nonzero
                 self.vdebt += 2  # Takes 2 cycles no matter what
+            case 0x58: # Clear Interrupt-Disable
+                self.flag_InterruptDisable = False; self.vdebt += 2
+                return
             case 0x60: # Return from Subroutine
                 tlow = self.pull(); self.pgmctr = (tlow+self.pull()*256); self.vdebt += 6
             case 0x68: # Pull Accumulator
@@ -125,9 +139,32 @@ class Emulation:
                 self.flagnum(self.regA)
                 return
             case 0x69: # Add to accumulator immediate
-                if not self.flag_Decimal:
-                    self.regA = signed8(self.regA) + signed8(self.read()) + self.flag_Carry
-                    # This is not correct, because this is signed math I need to set the carry on 129 and -128. Does this also mean the carry can behave as negative? Need more research the documnetation is pretty lacking
+                # Math using BCD if Decimal flag is high
+                if self.flag_Decimal:
+                    tcarry = 0
+                    tlowa = self.regA % 16; thigha = math.floor(self.regA / 16)
+                    tlowmem = self.read() % 16; thighmem = math.floor(self.read() / 16)
+                    resultlow = self.flag_Carry + tlowa + tlowmem
+                    self.flag_Carry = False
+                    if resultlow > 10:
+                        resultlow -= 10
+                        tcarry = 1
+                    resulthigh = thigha + thighmem + tcarry
+                    if resulthigh > 10:
+                        resulthigh -= 10
+                        self.flag_Carry = True
+                    self.regA = resulthigh*16 + resultlow
+                    if self.regA == 0:
+                        self.flag_Zero = True
+                # If Decimal flag off, treat the numbers as either signed or unsigned
+                else:
+                    tempval = self.regA + self.read() + self.flag_Carry
+                    if tempval > 256:
+                        tempval -= 256; self.flag_Carry = True
+                    elif tempval == 0 and not self.flag_Carry:
+                        self.flag_Zero = True
+                self.vdebt += 2
+
             case 0x70:  # Branch on Overflow
                 if self.flag_Overflow:
                     signedval = signed8(self.read())
@@ -137,6 +174,9 @@ class Emulation:
                         self.vdebt += 1  # Branch takes extra cycle if crossing page boundary
                     self.vdebt += 1  # Takes 1 additional cycles if nonzero
                 self.vdebt += 2  # Takes 2 cycles no matter what
+            case 0x78: # Set Interrupt-Disable
+                self.flag_InterruptDisable = True; self.vdebt += 2
+                return
             case 0x84: # STY Zero Page
                 self.write(self.read(), self.regY); self.vdebt += 3
             case 0x85: # STA Zero Page
@@ -178,6 +218,12 @@ class Emulation:
                 self.regA = self.read((tlow+self.read(self.pgmctr)*256)); self.vdebt += 4
                 self.flagnum(self.regA)
                 # TODO Extra cycle if page boundary crossed
+            case 0xB8: # Clear Overflow
+                self.flag_Overflow = False; self.vdebt += 2
+                return
+            case 0xD8: # Clear Decimal Flag
+                self.flag_Decimal = False; self.vdebt += 2
+                return
             case 0xD0: # Branch Not Equal
                 if not self.flag_Zero:
                     signedval = signed8(self.read())
@@ -187,6 +233,8 @@ class Emulation:
                         self.vdebt += 1 # Branch takes extra cycle if crossing page boundary
                     self.vdebt += 1 # Takes 1 additional cycles if nonzero
                 self.vdebt += 2 # Takes 2 cycles no matter what
+            case 0xEA: # NOP
+                self.vdebt += 2; return
             case 0xF0: # Branch on Equal
                 if self.flag_Zero:
                     signedval = signed8(self.read())
@@ -196,6 +244,14 @@ class Emulation:
                         self.vdebt += 1  # Branch takes extra cycle if crossing page boundary
                     self.vdebt += 1  # Takes 1 additional cycles if nonzero
                 self.vdebt += 2  # Takes 2 cycles no matter what
+            case 0xD8: # Set Decimal Flag
+                self.flag_Decimal = True; self.vdebt = 2
+                return
+
+
+
+
+
 
         # The below line automatically increments the counter for all cases
         # This can be skipped for one byte instructions by returning, it saves space
