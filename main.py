@@ -5,7 +5,7 @@ def main():
     filepath = "testfile.nes"
     emu_instance = Emulation(filepath, debug=True)
     emu_instance.run_emu()
-
+    print(emu_instance.regA)
     # $69 Immediate addition test
 
 if __name__ == '__main__':
