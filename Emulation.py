@@ -111,6 +111,7 @@ class Emulation:
     def get_abs_indx(self, addr, index):
         self.cycles += addr % 256 + index > 255
         return addr + index
+    # TODO, utilize this function in indirect inclusive / exclusive?
 
     def get_incl_indr(self, offset=self.regX):
         tlow = self.read(self.pgmctr + offset)
@@ -118,6 +119,8 @@ class Emulation:
         return tlow + thigh*256
 
     def get_excl_indr(self, offset=self.regY):
+        # Why return 2 different values? $91 does NOT cost an additional cycle for crossing page boundaries unlike every other Exclusive Indirect Addressing,
+        # so we will let the op choose whether it ones to add that extra cycle in or not
         tlow = self.read(self.read())
         thigh = self.read(self.read() + 1)
         return (tlow + thigh*256) + offset, tlow % 255 == 0
@@ -299,6 +302,20 @@ class Emulation:
                 self.pgmctr = (tlow+thigh*256); self.cycles += 6
                 return # prevent auto increment to pgmctr since we just set it
                 # </editor-fold>
+            case 0x21:
+                # <editor-fold desc="AND w/ Accumulator Indirect, X Indexed (Inclusive Indirect)">
+                addr = self.get_incl_indr()
+                self.regA &= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 6
+                # </editor-fold>
+            case 0x25:
+                # <editor-fold desc="AND w/ Accumulator Zero Page">
+                addr = self.read()
+                self.regA &= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 3
+                # </editor-fold>
             case 0x26:
                 # <editor-fold desc="Rotate Left Zero Page">
                 addr = self.read()
@@ -318,10 +335,23 @@ class Emulation:
                 self.cycles += 3; return
                 # </editor-fold>
                 # TODO: Probably more efficient to do this as subtraction in a while loop?
+            case 0x29:
+                # <editor-fold desc="AND w/ Accumulator Immediate">
+                self.regA &= self.read()
+                self.set_flags(self.regA)
+                self.cycles += 2
+                # </editor-fold>
             case 0x2A:
                 # <editor-fold desc="Rotate Left Accumulator">
                 self.regA = self.rol(self.regA)
                 self.cycles += 2; return
+                # </editor-fold>
+            case 0x2D:
+                # <editor-fold desc="AND w/ Accumulator Absolute">
+                addr = self.get_abs()
+                self.regA &= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 4
                 # </editor-fold>
             case 0x2E:
                 # <editor-fold desc="Rotate Left Absolute">
@@ -340,6 +370,20 @@ class Emulation:
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
                 # </editor-fold>
+            case 0x31:
+                # <editor-fold desc="AND w/ Accumulator Indirect, Y Indexed (Exclusive Indirect)">
+                addr, addcycle = self.get_excl_indr()
+                self.regA &= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 5 + addcycle
+                # </editor-fold>
+            case 0x35:
+                # <editor-fold desc="AND w/ Accumulator Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.regA &= self.read(addr)
+                self.setflags(self.regA)
+                self.cycles += 4
+                # </editor-fold>
             case 0x36:
                 # <editor-fold desc="Rotate Left Zero Page, X Indexed">
                 addr = (self.read() + self.regX) % 256
@@ -350,11 +394,39 @@ class Emulation:
                 self.flag_Carry = True; self.cycles += 2
                 return
                 # </editor-fold>
+            case 0x39:
+                # <editor-fold desc="AND w/ Accumulator Absolute Y Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regY)
+                self.regA &= self.read(addr)
+                self.setflags(self.regA)
+                self.cycles += 4
+                # </editor-fold>
+            case 0x3D:
+                # <editor-fold desc="AND w/ Accumulator Absolute X Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regX)
+                self.regA &= self.read(addr)
+                self.setflags(self.regA)
+                self.cycles += 4
+                # </editor-fold>
             case 0x3E:
                 # <editor-fold desc="Rotate Left Absolute, X Indexed">
                 addr = self.get_abs_indx(self.get_abs(), self.regX) # Add cycle if page boundary crossed
                 self.write(addr, rol(self.read(iaddr)))
                 self.cycles += 7
+                # </editor-fold>
+            case 0x41:
+                # <editor-fold desc="EOR w/ Accumulator Indirect, X Indexed (Inclusive Indirect)">
+                addr = self.get_incl_indr()
+                self.regA ^= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 6
+                # </editor-fold>
+            case 0x45:
+                # <editor-fold desc="EOR w/ Accumulator Zero Page">
+                addr = self.read()
+                self.regA ^= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 3
                 # </editor-fold>
             case 0x46:
                 # <editor-fold desc="Logical Shift Right Zero Page">
@@ -367,6 +439,12 @@ class Emulation:
                 self.push(self.regA); self.cycles += 3
                 return
                 # </editor-fold>
+            case 0x49:
+                # <editor-fold desc="EOR w/ Accumulator Immediate">
+                self.regA ^= self.read()
+                self.set_flags(self.regA)
+                self.cycles += 2
+                # </editor-fold>
             case 0x4A:
                 # <editor-fold desc="Logical Shift Right Accumulator">
                 self.regA = self.lsr(self.regA)
@@ -378,6 +456,13 @@ class Emulation:
                 thigh = self.read()
                 self.pgmctr = (tlow + thigh * 256); self.cycles += 3
                 return # prevent auto increment to pgmctr since we just set it
+                # </editor-fold>
+            case 0x4D:
+                # <editor-fold desc="EOR w/ Accumulator Absolute">
+                addr = self.get_abs()
+                self.regA ^= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 4
                 # </editor-fold>
             case 0x4E:
                 # <editor-fold desc="Logical Shift Right Absolute">
@@ -396,6 +481,20 @@ class Emulation:
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
                 # </editor-fold>
+            case 0x51:
+                # <editor-fold desc="EOR w/ Accumulator Indirect, Y Indexed (Exclusive Indirect)">
+                addr, addcycle = self.get_excl_indr()
+                self.regA ^= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 5 + addcycle
+                # </editor-fold>
+            case 0x55:
+                # <editor-fold desc="EOR w/ Accumulator Zero Page, X Indexed">
+                addr = self.read() + x
+                self.regA ^= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 4
+                # </editor-fold>
             case 0x56:
                 # <editor-fold desc="Logical Shift Right Zero Page, X Indexed">
                 addr = (self.read() + self.regX) % 256
@@ -405,6 +504,20 @@ class Emulation:
                 # <editor-fold desc="Clear Interrupt-Disable">
                 self.flag_InterruptDisable = False; self.cycles += 2
                 return
+                # </editor-fold>
+            case 0x59:
+                # <editor-fold desc="EOR w/ Accumulator Absolute Y Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regY)  # Add cycle if page boundary crossed
+                self.regA ^= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 4
+                # </editor-fold>
+            case 0x5D:
+                # <editor-fold desc="EOR w/ Accumulator Absolute X Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regX)  # Add cycle if page boundary crossed
+                self.regA ^= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 4
                 # </editor-fold>
             case 0x5E:
                 # <editor-fold desc="Logical Shift Right Absolute, X Indexed">
