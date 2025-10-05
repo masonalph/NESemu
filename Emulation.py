@@ -23,6 +23,8 @@ class Emulation:
         self.flag_Overflow = False
         self.flag_Negative = False
         self.stackptr = 0xFD
+        self.logger = []
+        self.iter = 0
 
         # initialize ram ( I believe this will need to be randomized on startup in the future)
         self.addSpace = [0xff] * 0x8000
@@ -40,11 +42,37 @@ class Emulation:
         self.flag_InterruptDisable = True
         while not self.halt:
             self.opcode = self.addSpace[self.pgmctr]
-            self.pgmctr += 0x1
             if self.debug:
-                print("op:" + hex(self.opcode),  "pgmctr:" + hex(self.pgmctr),
-                      "regA:" + hex(self.regA), "0x0:" + hex(self.addSpace[0x0]))
+                self.logger.append({"Program Counter": self.pgmctr, "Op": self.opcode,
+                                "RegA": self.regA, "RegX": self.regX, "RegY": self.regY,
+                                "Flags": self.build_Fstring()})
+            self.pgmctr += 0x1
             self.op()
+
+    def build_Fstring(self):
+        base = ""
+        if self.flag_Negative:
+            base = base + "N"
+        else:
+            base = base + "n"
+        if self.flag_Overflow:
+            base = base + "V"
+        else:
+            base = base + "v"
+        base = base + "TB"
+        if self.flag_Decimal:
+            base = base + "D"
+        else:
+            base = base + "d"
+        if self.flag_Zero:
+            base = base + "Z"
+        else:
+            base = base + "z"
+        if self.flag_Carry:
+            base = base + "C"
+        else:
+            base = base + "c"
+        return base
 
     def push(self, value): # Push value to stack, decrease stack pointer
         self.write(0x100 + self.stackptr, value)
@@ -70,7 +98,7 @@ class Emulation:
         else:
             self.addSpace[address] = data
 
-    def setflags(self, value, negative=True, zero=True): # Set relevant flags based on passed value.
+    def set_flags(self, value, negative=True, zero=True): # Set relevant flags based on passed value.
         # I would like to make this function more comprehensive with the option to opt in and out of certain flags but I'm not sure if that's necessary
         self.flag_Negative = value > 127 and negative
         self.flag_Zero = value == 0 and zero
@@ -79,14 +107,20 @@ class Emulation:
         tlow = self.read()
         self.pgmctr += 1
         return tlow + self.read() * 256
+    
+    def get_abs_indx(self, addr, index):
+        self.cycles += addr % 256 + index > 255
+        return addr + index
 
-    def get_ind(self): # Get Indirect Address
-        vec = self.get_abs()
-        tlow = self.read(vec)
-        vec += 1
-        if vec % 255 == 0:
-            vec -= 255
-        return tlow + self.read(vec) * 256
+    def get_incl_indr(self, offset=self.regX):
+        tlow = self.read(self.pgmctr + offset)
+        thigh = self.read(self.pgmctr + offset + 1)
+        return tlow + thigh*256
+
+    def get_excl_indr(self, offset=self.regY):
+        tlow = self.read(self.read())
+        thigh = self.read(self.read() + 1)
+        return (tlow + thigh*256) + offset, tlow % 255 == 0
 
     def adc(self, a, b): # Add with carry
         tempval = a + b + self.flag_Carry
@@ -94,33 +128,80 @@ class Emulation:
         self.regA = tempval
         tempsigned = signed8(a) + signed8(b) + self.flag_Carry
         self.flag_Overflow = -128 > tempsigned > 127
+        self.set_flags(tempval)
         return tempval
 
     def asl(self, val): # Arithmetic shift left
         self.flag_Carry = val > 127
         val = (val % 128)*2
-        self.setflags(val)
+        self.set_flags(val)
+        return val
+
+    def lsr(self, val): # Logical Shift Right
+        self.flag_Carry = val % 2 == 1
+        val -= self.flag_Carry
+        val /= 2
+        self.set_flags(val)
         return val
 
     def rol(self, val): # Roll Left
         willcarry = val > 127
         val = (val % 128)*2 + self.flag_Carry
-        self.setflags(val)
+        self.set_flags(val)
         self.flag_Carry = willcarry
         return val
 
+    def ror(self, val): # Roll Right
+        willcarry = val % 2 == 1
+        val -= willcarry
+        val /= 2
+        val += (self.flag_Carry*128)
+        self.set_flags(val)
+        self.flag_Carry = willcarry
+        return val
+        # There may be a more efficient way to set the 8th bit then mult by 0 / 1
+
+    def inc(self, val):
+        val += 1
+        if val == 256:
+            val = 0
+        self.setflags(final)
+        return final
+
     def op(self):
+        # I'M GONNA RENAME INDIRECT INDEXED ADDRESSING TO EXCLUSIVE ADDRESSING AND INDEXED INDIRECT ADDRESSING TO INCLUSIVE ADDRESSING
+        # Okay so ($04, X) will be called Inclusive indirect and ($04), Y will be called Exclusive please email all of your complaints to gaben@valvesoftware.com
+
         # At the beginning of each op, the program counter will point to the address immediately following the opcode
         # For operations with a length of one, a return should be used to skip this automatic increment at the end of the op function
         # These automatic increments are done in an attempt to shorten the  amount of space each op takes up, I realize this may not be best practice
         # And if it proves to be too confusing I can revisit this later
         match self.opcode:
-            case 0x02:  # HTL
+            case 0x01:
+                # <editor-fold desc="OR w/ Accumulator, Indirect X (Inclusive Indirect)">
+                addr = self.get_incl_indr()
+                self.regA |= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 6
+                # </editor-fold>
+            case 0x02:
+                # <editor-fold desc="Halt">
                 self.halt = True
-            case 0x06: # Bitshift Left Zero Page
-                self.write(self.read(), self.asl(self.read(self.read())))
+                # </editor-fold>
+            case 0x05:
+                # <editor-fold desc="OR w/ Accumulator Zero Page">
+                addr = self.read()
+                self.regA |= self.read(addr)
+                self.set_flags(self.regA); self.cycles += 3
+                # </editor-fold>
+            case 0x06:
+                # <editor-fold desc="Arithmetic Shift Left Zero Page">
+                addr = self.read()
+                self.write(addr, self.asl(self.read(addr)))
                 self.cycles = 5
-            case 0x08: # Push Flags
+                # </editor-fold>
+            case 0x08:
+                # <editor-fold desc="Push Flags">
                 flagbyte = 48
                 if self.flag_Carry:
                     flagbyte += 1
@@ -135,16 +216,29 @@ class Emulation:
                 if self.flag_Negative:
                     flagbyte += 128
                 self.push(flagbyte); self.cycles += 3; return
-            case 0x16: # Bitshift Left Zero Page, X indexed
-                addr = (self.read() + self.regX) % 256
-                self.write(addr, asl(self.read(addr))); self.cycles += 6
-            case 0x0A: # Bitshift Left A
+                # </editor-fold>
+            case 0x09:
+                # <editor-fold desc="OR w/ Accumulator Immediate">
+                self.regA |= self.read()
+                self.setflags(self.regA); self.cycles += 2
+                # </editor-fold>
+            case 0x0D:
+                # <editor-fold desc="OR w/ Accumulator Absolute">
+                self.regA |= self.read(self.get_abs())
+                self.set_flags(self.regA); self.cycles += 4
+                # </editor-fold>
+            case 0x0A:
+                # <editor-fold desc="Arithmetic Shift Left Accumulator">
                 self.regA = self.asl(self.regA)
                 self.cycles = 2; return
-            case 0x0E: # Bitshift Left Absolute
+                # </editor-fold>
+            case 0x0E:
+                # <editor-fold desc="Arithmetic Shift Left Absolute">
                 addr = self.get_abs()
                 self.write(addr, asl(self.read(addr))); self.cycles += 6
-            case 0x10: # Branch on Plus
+                # </editor-fold>
+            case 0x10:
+                # <editor-fold desc="Branch on Plus">
                 if not self.flag_Negative:
                     signedval = signed8(self.read())
                     temppg = self.pgmctr
@@ -153,21 +247,65 @@ class Emulation:
                         self.cycles += 1  # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
-            # TODO: Refactor Branches, this code can be much cleaner
-            case 0x18: # Clear Carry
+                # </editor-fold>
+            # TODO: Refactor Branching to use get_abs_indx()
+            case 0x11:
+                # <editor-fold desc="OR w/ Accumulator Indirect, Y Indexed (Exclusive Indirect)">
+                addr, addcycle = self.get_excl_indr()
+                self.regA |= self.read(addr)
+                self.cycles += addcycle + 5
+                self.set_flags(self.regA)
+                # </editor-fold>
+            case 0x15:
+                # <editor-fold desc="OR w/ Accumulator Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.regA |= self.read(addr)
+                self.set_flags(self.regA); self.cycles += 4
+                # </editor-fold>
+            case 0x16:
+                # <editor-fold desc="Arithmetic Shift Left Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.write(addr, asl(self.read(addr))); self.cycles += 6
+                # </editor-fold>
+            case 0x18:
+                # <editor-fold desc="Clear Carry">
                 self.flag_Carry = False; self.cycles += 2
                 return
-            case 0x1E: # Bitshift Left Absolute X indexed
+                # </editor-fold>
+            case 0x19:
+                # <editor-fold desc="OR w/ Accumulator Absolute, Y Index">
+                addr = self.get_abs_indx(self.get_abs(), self.regY)
+                self.regA |= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 4
+                # </editor-fold>
+            case 0x1D:
+                # <editor-fold desc="OR w/ Accumulator Absolute, X Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regX)
+                self.regA |= self.read(addr)
+                self.set_flags(self.regA)
+                self.cycles += 4
+                # </editor-fold>
+            case 0x1E:
+                # <editor-fold desc="Arithmetic Shift Left Absolute, X Indexed">
                 addr = self.get_abs() + self.regX
                 self.write(addr, self.asl(self.read(addr))); self.cycles += 7
-            case 0x20: # Jump to Subroutine
+                # </editor-fold>
+            case 0x20:
+                # <editor-fold desc="Jump to Subroutine">
                 tlow = self.read(); self.pgmctr += 1
                 thigh = self.read()
                 self.push(math.floor(self.pgmctr/256)); self.push(self.pgmctr % 256)
                 self.pgmctr = (tlow+thigh*256); self.cycles += 6
                 return # prevent auto increment to pgmctr since we just set it
-            case 0x28: # Pull Flags
-                # TODO: Probably more efficient to do this as subtraction in a while loop?
+                # </editor-fold>
+            case 0x26:
+                # <editor-fold desc="Rotate Left Zero Page">
+                addr = self.read()
+                self.write(addr, rol(self.read(addr))); self.cycles += 5
+                # </editor-fold>
+            case 0x28:
+                # <editor-fold desc="Pull Flags">
                 flags = bin(self.pull()[1:])
                 while len(flags) < 8:
                     flags = "0" + flags
@@ -178,7 +316,21 @@ class Emulation:
                 self.flag_Overflow = flags[1]
                 self.flag_Negative = flags[0]
                 self.cycles += 3; return
-            case 0x30:  # Branch on Minus.
+                # </editor-fold>
+                # TODO: Probably more efficient to do this as subtraction in a while loop?
+            case 0x2A:
+                # <editor-fold desc="Rotate Left Accumulator">
+                self.regA = self.rol(self.regA)
+                self.cycles += 2; return
+                # </editor-fold>
+            case 0x2E:
+                # <editor-fold desc="Rotate Left Absolute">
+                addr = self.get_abs()
+                self.write(addr, rol(self.read(addr)))
+                self.cycles += 6
+                # </editor-fold>
+            case 0x30:
+                # <editor-fold desc="Branch on Minus">
                 if self.flag_Negative:
                     signedval = signed8(self.read())
                     temppg = self.pgmctr
@@ -187,18 +339,54 @@ class Emulation:
                         self.cycles += 1  # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
-            case 0x38: # Set Carry
+                # </editor-fold>
+            case 0x36:
+                # <editor-fold desc="Rotate Left Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.write(addr, rol(self.read(addr))); self.cycles += 6
+                # </editor-fold>
+            case 0x38:
+                # <editor-fold desc="Set Carry">
                 self.flag_Carry = True; self.cycles += 2
                 return
-            case 0x48: # Push Accumulator
+                # </editor-fold>
+            case 0x3E:
+                # <editor-fold desc="Rotate Left Absolute, X Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regX) # Add cycle if page boundary crossed
+                self.write(addr, rol(self.read(iaddr)))
+                self.cycles += 7
+                # </editor-fold>
+            case 0x46:
+                # <editor-fold desc="Logical Shift Right Zero Page">
+                addr = self.read()
+                self.write(addr, lsr(self.read(addr)))
+                self.cycles += 5
+                # </editor-fold>
+            case 0x48:
+                # <editor-fold desc="Push Accumulator">
                 self.push(self.regA); self.cycles += 3
                 return
-            case 0x4C: # JMP
+                # </editor-fold>
+            case 0x4A:
+                # <editor-fold desc="Logical Shift Right Accumulator">
+                self.regA = self.lsr(self.regA)
+                self.cycles += 2; return
+                # </editor-fold>
+            case 0x4C:
+                # <editor-fold desc="Jump">
                 tlow = self.read(); self.pgmctr += 1
                 thigh = self.read()
                 self.pgmctr = (tlow + thigh * 256); self.cycles += 3
                 return # prevent auto increment to pgmctr since we just set it
-            case 0x50:  # Branch on not Overflow
+                # </editor-fold>
+            case 0x4E:
+                # <editor-fold desc="Logical Shift Right Absolute">
+                addr = self.get_abs()
+                self.write(addr, rol(self.read(addr)))
+                self.cycles += 6
+                # </editor-fold>
+            case 0x50:
+                # <editor-fold desc="Branch on Not Overflow">
                 if not self.flag_Overflow:
                     signedval = signed8(self.read())
                     temppg = self.pgmctr
@@ -207,29 +395,80 @@ class Emulation:
                         self.cycles += 1  # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
-            case 0x58: # Clear Interrupt-Disable
+                # </editor-fold>
+            case 0x56:
+                # <editor-fold desc="Logical Shift Right Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.write(addr, lsr(self.read(addr)))
+                # </editor-fold>
+            case 0x58:
+                # <editor-fold desc="Clear Interrupt-Disable">
                 self.flag_InterruptDisable = False; self.cycles += 2
                 return
-            case 0x60: # Return from Subroutine
-                tlow = self.pull(); self.pgmctr = (tlow+self.pull()*256); self.cycles += 6
-            case 0x65: # Add to Accumulator zero page
-                self.regA = self.adc(self.regA, self.read())
-                self.setflags(self.regA); self.cycles += 3
-            case 0x68: # Pull Accumulator
+                # </editor-fold>
+            case 0x5E:
+                # <editor-fold desc="Logical Shift Right Absolute, X Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regX)  # Add cycle if page boundary crossed
+                self.write(addr, lsr(self.read(addr))); self.cycles += 7
+                # </editor-fold>
+            case 0x60:
+                # <editor-fold desc="Return from Subroutine">
+                tlow = self.pull()
+                self.pgmctr = (tlow+self.pull()*256); self.cycles += 6
+                # </editor-fold>
+            case 0x65:
+                # <editor-fold desc="Add to Accumulator Zero Page">
+                addr = self.read()
+                self.regA = self.adc(self.regA, self.read(addr))
+                self.cycles += 3
+                # </editor-fold>
+            case 0x66:
+                # <editor-fold desc="Rotate Right Zero Page">
+                addr = self.read()
+                self.write(addr, ror(self.read(addr))); self.cycles += 5
+                # </editor-fold>
+            case 0x68:
+                # <editor-fold desc="Pull Accumulator">
                 self.regA = self.pull(); self.cycles += 4
-                self.setflags(self.regA)
+                self.set_flags(self.regA)
                 return
-            case 0x69: # Add to accumulator immediate
+                # </editor-fold>
+            case 0x69:
+                # <editor-fold desc="Add to Accumulator Immediate">
                 self.regA = self.adc(self.regA, self.read())
-                self.setflags(self.regA); self.cycles += 2
+                self.cycles += 2
                 # Fun fact, the NES does not use the Decimal flag, ask me how much time I spent implementing BCD from the raw 6502 docs before coming to this realization
-            case 0x6C: # Jump to Indirect Address
-                self.pgmctr = self.get_ind(); self.cycles += 5
-            case 0x6D: # Add to accumulator absolute
+                # </editor-fold>
+            case 0x6A:
+                # <editor-fold desc="Rotate Right Accumulator">
+                self.regA = self.ror(self.regA)
+                self.cycles += 2; return
+                # </editor-fold>
+            case 0x6C:
+                # <editor-fold desc="Jump to Indirect Address">
+                addr = self.get_abs()
+                tlow = self.read(addr)
+                addr += 1
+                if addr % 256 == 0:
+                    addr -= 256
+                thigh = self.read(addr)
+                self.pgmctr = tlow + thigh*256
+                self.cycles += 5
+                # </editor-fold>
+            case 0x6D:
+                # <editor-fold desc="Add to Accumulator Absolute">
                 addr = self.get_abs()
                 self.regA = adc(self.regA, self.read(addr))
-                self.setflags(self.regA); self.cycles += 4
-            case 0x70:  # Branch on Overflow
+                self.cycles += 4
+                # </editor-fold>
+            case 0x6E:
+                # <editor-fold desc="Rotate Right Absolute">
+                addr = self.get_abs()
+                self.write(addr,self.ror(self.read(addr)))
+                self.cycles += 6
+                # </editor-fold>
+            case 0x70:
+                # <editor-fold desc="Branch on Overflow">
                 if self.flag_Overflow:
                     signedval = signed8(self.read())
                     temppg = self.pgmctr
@@ -238,40 +477,78 @@ class Emulation:
                         self.cycles += 1  # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
-            case 0x75: # Add to accumulator zero page, x indexed
+                # </editor-fold>
+            case 0x75:
+                # <editor-fold desc="Add to Accumulator Zero Page, X Indexed">
                 addr = (self.read() + self.regX) % 256
                 self.regA = self.adc(self.regA, self.read(addr))
-                self.setflags(self.regA); self.cycles += 4
-            case 0x78: # Set Interrupt-Disable
+                self.cycles += 4
+                # </editor-fold>
+            case 0x76:
+                # <editor-fold desc="Rotate Right Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.write(addr, self.ror(self.read(addr)))
+                self.cycles += 6
+                # </editor-fold>
+            case 0x78:
+                # <editor-fold desc="Set Interrupt-Disable">
                 self.flag_InterruptDisable = True; self.cycles += 2
                 return
-            case 0x79:  # Add to accumulator, absolute y indexed
-                addr = self.get_abs()
-                self.cycles += addr % 256 + self.regY > 255  # Add cycle if page boundary crossed
+                # </editor-fold>
+            case 0x79:
+                # <editor-fold desc="Add to Accumulator Absolute, Y Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regY) # Add cycle if page boundary crossed
                 self.regA = adc(self.regA, self.read(addr + self.regY))
-                self.setflags(self.regA); self.cycles += 4
-            case 0x7D: # Add to accumulator, absolute x indexed
-                addr = self.get_abs()
-                self.cycles += addr % 256 + self.regX > 255  # Add cycle if page boundary crossed
+                self.cycles += 4
+                # </editor-fold>
+            case 0x7D:
+                # <editor-fold desc="Add to Accumulator Absolute, X Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regX)  # Add cycle if page boundary crossed
                 self.regA = adc(self.regA, self.read(addr + self.regX))
-                self.setflags(self.regA); self.cycles += 4
-            case 0x84: # STY Zero Page
+                self.cycles += 4
+                # </editor-fold>
+            case 0x7E:
+                # <editor-fold desc="Rotate Right Absolute, X Indexed">
+                addr = self.get_abs() + self.regX # No Additional cycles when boundary crossed
+                self.write(addr, self.ror(self.read(addr)))
+                self.cycles += 7
+                # </editor-fold>
+            case 0x84:
+                # <editor-fold desc="STY Zero Page">
                 self.write(self.read(), self.regY); self.cycles += 3
-            case 0x85: # STA Zero Page
+                # </editor-fold>
+            case 0x85:
+                # <editor-fold desc="STA Zero Page">
                 self.write(self.read(), self.regA); self.cycles += 3
-            case 0x86: # STX Zero Page
+                # </editor-fold>
+            case 0x86:
+                # <editor-fold desc="STX Zero Page">
                 self.write(self.read(), self.regX); self.cycles += 3
-            case 0x88: # DEY
-                self.regY -= 1; self.cycles += 2; return
-            case 0x8A: # TXA
-                self.regA = self.regX; self.cycles += 2; return
-            case 0x8C: # STY Absolute
+                # </editor-fold>
+            case 0x88:
+                # <editor-fold desc="Decrement Y">
+                self.regY -= 1; self.cycles += 2
+                self.set_flags(self.regY)
+                # </editor-fold>
+            case 0x8A:
+                # <editor-fold desc="Transfer X > A">
+                self.regA = self.regX; self.cycles += 2
+                self.set_flags(self.regA); return
+                # </editor-fold>
+            case 0x8C:
+                # <editor-fold desc="Store Register Y Absolute">
                 self.write(self.read(self.get_abs()), self.regY); self.cycles += 4
-            case 0x8D: # STA absolute
+                # </editor-fold>
+            case 0x8D:
+                # <editor-fold desc="Store Register A Absolute">
                 self.write(self.read(self.get_abs()), self.regA); self.cycles += 4
-            case 0x8E: # STX Absolute
+                # </editor-fold>
+            case 0x8E:
+                # <editor-fold desc="Store Register X Absolute">
                 self.write(self.read(self.get_abs()), self.regX); self.cycles += 4
-            case 0x90: # Branch on not Carry
+                # </editor-fold>
+            case 0x90:
+                # <editor-fold desc="Branch on Not Carry">
                 if not self.flag_Carry:
                     signedval = signed8(self.read())
                     temppg = self.pgmctr
@@ -280,44 +557,75 @@ class Emulation:
                         self.cycles += 1  # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
-            case 0x98: # TYA
-                self.regA = self.regY; self.cycles +=2; return
-            case 0xAA: # TAX
-                self.regX = self.regA; self.cycles += 2; return
-            case 0xA0:  # immediate Y
+                # </editor-fold>
+            case 0x98:
+                # <editor-fold desc="Transfer Y > A">
+                self.regA = self.regY; self.cycles += 2
+                self.set_flags(self.regA); return
+                # </editor-fold>
+            case 0xAA:
+                # <editor-fold desc="Transfer A > X">
+                self.regX = self.regA; self.cycles += 2
+                self.set_flags(self.regX); return
+                # </editor-fold>
+            case 0xA0:
+                # <editor-fold desc="Load Y Immediate">
                 self.regY = self.read(); self.cycles += 2
-                self.setflags(self.regY)
-            case 0xA2:  # immediate X
+                self.set_flags(self.regY)
+                # </editor-fold>
+            case 0xA2:
+                # <editor-fold desc="Load Immediate X">
                 self.regX = self.read(); self.cycles += 2
-                self.setflags(self.regX)
-            case 0xA5: # LDA Zero Page
+                self.set_flags(self.regX)
+                # </editor-fold>
+            case 0xA5:
+                # <editor-fold desc="Load A Zero Page">
                 self.regA = self.read(); self.cycles += 2
-                self.setflags(self.regA)
-            case 0xA8: # TAY
-                self.regY = self.regA; self.cycles += 2; return
-            case 0xA9:  # immediate A
+                self.set_flags(self.regA)
+                # </editor-fold>
+            case 0xA8:
+                # <editor-fold desc="Transfer A > Y">
+                self.regY = self.regA; self.cycles += 2
+                self.set_flags(self.regY); return
+                # </editor-fold>
+            case 0xA9:
+                # <editor-fold desc="Load A Immediate">
                 self.regA = self.read(); self.cycles += 2
-                self.setflags(self.regA)
-            case 0xAD: # LDA Absolute
-                add = self.get_abs()
-                if math.floor(add / 256) != math.floor(self.pgmctr / 256):
-                    self.cycles += 1
-                self.regA = self.read(self.get_abs())
-                self.setflags(self.regA); self.cycles += 3
-            case 0xBA: # TSX
+                self.set_flags(self.regA)
+                # </editor-fold>
+            case 0xAD:
+                # <editor-fold desc="Load A Absolute">
+                addr = self.get_abs()
+                self.regA = self.read(addr)
+                self.set_flags(self.regA); self.cycles += 4
+                # </editor-fold>
+            case 0xBA:
+                # <editor-fold desc="Transfer Stack Pointer to X">
                 self.regX = self.pop()
-                self.setflags(self.regX)
-            case 0xB8: # Clear Overflow
+                self.set_flags(self.regX)
+                # </editor-fold>
+            case 0xB8:
+                # <editor-fold desc="Clear Overflow">
                 self.flag_Overflow = False; self.cycles += 2
                 return
-            case 0xCA: # DEX
-                self.regX -= 1; self.cycles += 2; return
-            case 0xC8: # INY
-                self.regY += 1; self.cycles += 2; return
-            case 0xD8: # Clear Decimal Flag
+                # </editor-fold>
+            case 0xCA:
+                # <editor-fold desc="Decrement X">
+                self.regX -= 1; self.cycles += 2
+                self.set_flags(self.regX); return
+                # </editor-fold>
+            case 0xC8:
+                # <editor-fold desc="Increment Y">
+                self.regY = self.inc(self.regY)
+                self.cycles += 2; return
+                # </editor-fold>
+            case 0xD8:
+                # <editor-fold desc="Clear Decimal -- Not Used">
                 self.flag_Decimal = False; self.cycles += 2
                 return
-            case 0xD0: # Branch Not Equal
+                # </editor-fold>
+            case 0xD0:
+                # <editor-fold desc="Branch on Not Equal">
                 if not self.flag_Zero:
                     signedval = signed8(self.read())
                     temppg = self.pgmctr
@@ -326,11 +634,30 @@ class Emulation:
                         self.cycles += 1 # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1 # Takes 1 additional cycles if nonzero
                 self.cycles += 2 # Takes 2 cycles no matter what
-            case 0xEA: # NOP
+                # </editor-fold>
+            case 0xE6:
+                # <editor-fold desc="Increment Memory Zero page">
+                addr = self.read()
+                self.write(addr, self.inc(self.read(addr)))
+                self.cycles += 5
+                # </editor-fold>
+            case 0xEA:
+                # <editor-fold desc="No Operation">
                 self.cycles += 2; return
-            case 0xE8: # INX
-                self.regX += 1; self.cycles += 2; return
-            case 0xF0: # Branch on Equal
+                # </editor-fold>
+            case 0xE8:
+                # <editor-fold desc="Increment X">
+                self.regX = self.inc(self.regX)
+                self.cycles += 2; return
+                # </editor-fold>
+            case 0xEE:
+                # <editor-fold desc="Increment Memory Absolute">
+                addr = self.get_abs()
+                self.write(addr, self.inc(self.read(addr)))
+                self.cycles += 6
+                # </editor-fold>
+            case 0xF0:
+                # <editor-fold desc="Branch on Equal">
                 if self.flag_Zero:
                     signedval = signed8(self.read())
                     temppg = self.pgmctr
@@ -339,15 +666,30 @@ class Emulation:
                         self.cycles += 1  # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
-            case 0xF8: # Set Decimal Flag
+                # </editor-fold>
+            case 0xF6:
+                # <editor-fold desc="Increment Memory Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.write(addr, self.inc(self.read(addr)))
+                self.cycles += 6
+                # </editor-fold>
+            case 0xF8:
+                # <editor-fold desc="Set Decimal Flag -- Not Used">
                 self.flag_Decimal = True; self.cycles = 2
                 return
+                # </editor-fold>
+            case 0xFE:
+                # <editor-fold desc="Increment Memory Absolute, X Indexed">
+                addr = self.get_abs + self.regX
+                self.write(addr, self.inc(self.read(addr)))
+                self.cycles += 7 # No additional cycles for crossing page boundary
+                # </editor-fold>
         # The below line automatically increments the counter for all cases
         # This can be skipped for one byte instructions by returning, it saves space
         self.pgmctr += 1
 
 
 # TODO: Function to shorten length of branch instructions?
-
+# TODO: Implement Overflow of 16 bit addresses, double check 8 bits are also handled correctly
 
 
