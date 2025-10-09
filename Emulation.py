@@ -134,6 +134,22 @@ class Emulation:
         self.set_flags(tempval)
         return tempval
 
+    def sbc(self, a, b): # Subtract with Carry
+        tempval = a - b - (not self.flag_Carry)
+        self.flag_Carry = tempval > 0
+        while tempval < 0:
+            tempval += 256
+        self.set_flags(tempval)
+        t1 = a > 127
+        t2 = b > 127
+        t3 = tempval > 127
+        # Get the signed flag of each number, set overflow if
+        # A positive - negative = negative or if a negative - positive = positive
+        # Simplified as sign of a != sign of b and sign of b == sign of c
+        self.flag_Overflow = t1 != t2 and t2 == t3
+        return tempval
+        # overflow if bit 7 0,1,1 or 1,0,0
+
     def asl(self, val): # Arithmetic shift left
         self.flag_Carry = val > 127
         val = (val % 128)*2
@@ -529,6 +545,12 @@ class Emulation:
                 tlow = self.pull()
                 self.pgmctr = (tlow+self.pull()*256); self.cycles += 6
                 # </editor-fold>
+            case 0x61:
+                # <editor-fold desc="Add with Carry Indirect, X Indexed (Inclusive Indirect)">
+                addr = self.get_incl_indr()
+                self.regA = self.adc(self.read(addr), self.regA)
+                self.cycles += 6
+                # </editor-fold>
             case 0x65:
                 # <editor-fold desc="Add to Accumulator Zero Page">
                 addr = self.read()
@@ -590,6 +612,12 @@ class Emulation:
                         self.cycles += 1  # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
+                # </editor-fold>
+            case 0x71:
+                # <editor-fold desc="Add with Carry Indirect, Y Indexed (Exclusive Indirect)">
+                addr, addcycle = self.get_excl_indr()
+                self.regA = self.adc(self.regA, self.read(addr))
+                self.cycles += 5 + addcycle
                 # </editor-fold>
             case 0x75:
                 # <editor-fold desc="Add to Accumulator Zero Page, X Indexed">
@@ -748,20 +776,43 @@ class Emulation:
                     self.cycles += 1 # Takes 1 additional cycles if nonzero
                 self.cycles += 2 # Takes 2 cycles no matter what
                 # </editor-fold>
+            case 0xE1:
+                # <editor-fold desc="Subtract with Carry Indirect, X Indexed (Inclusive Indirect)">
+                addr = self.get_incl_indr()
+                self.regA = self.sdc(self.regA, self.read(addr))
+                self.cycles += 6
+                # </editor-fold>
+            case 0xE5:
+                # <editor-fold desc="Subtract with Carry Zero Page">
+                addr = self.read()
+                self.regA = self.sbc(self.regA, self.read(addr))
+                self.cycles += 3
+                # </editor-fold>
             case 0xE6:
                 # <editor-fold desc="Increment Memory Zero page">
                 addr = self.read()
                 self.write(addr, self.inc(self.read(addr)))
                 self.cycles += 5
                 # </editor-fold>
-            case 0xEA:
-                # <editor-fold desc="No Operation">
-                self.cycles += 2; return
-                # </editor-fold>
             case 0xE8:
                 # <editor-fold desc="Increment X">
                 self.regX = self.inc(self.regX)
                 self.cycles += 2; return
+                # </editor-fold>
+            case 0xE9:
+                # <editor-fold desc="Subtract with Carry Immediate">
+                self.regA = self.sbc(self.regA, self.read())
+                self.cycles += 2
+                # </editor-fold>
+            case 0xEA:
+                # <editor-fold desc="No Operation">
+                self.cycles += 2; return
+                # </editor-fold>
+            case 0xED:
+                # <editor-fold desc="Subtract with Carry Absolute">
+                addr = self.get_abs()
+                self.regA = self.sbc(self.regA, self.read(addr))
+                self.cycles += 4
                 # </editor-fold>
             case 0xEE:
                 # <editor-fold desc="Increment Memory Absolute">
@@ -780,6 +831,18 @@ class Emulation:
                     self.cycles += 1  # Takes 1 additional cycles if nonzero
                 self.cycles += 2  # Takes 2 cycles no matter what
                 # </editor-fold>
+            case 0xF1:
+                # <editor-fold desc="Subtract with Carry Indirect, Y Indexed (Exclusive Indirect)">
+                addr, addcycle = self.get_excl_indr()
+                self.regA = self.sbc(self.regA, self.read(addr))
+                self.cycles += 5 + addcycle
+                # </editor-fold>
+            case 0xF5:
+                # <editor-fold desc="Subtract with Carry Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.regA = self.sbc(self.regA, self.read(addr))
+                self.cycles += 4
+                # </editor-fold>
             case 0xF6:
                 # <editor-fold desc="Increment Memory Zero Page, X Indexed">
                 addr = (self.read() + self.regX) % 256
@@ -791,6 +854,18 @@ class Emulation:
                 self.flag_Decimal = True; self.cycles = 2
                 return
                 # </editor-fold>
+            case 0xF9:
+                # <editor-fold desc="Subtract with Carry Absolute, Y Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regY)
+                self.regA = self.sdc(self.regA, self.read(addr))
+                self.cycles += 4
+                # </editor-fold>
+            case 0xFD:
+                # <editor-fold desc="Subtract with Carry Absolute, X Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regX)
+                self.regA = self.sdc(self.regA, self.read(addr))
+                self.cycles += 4
+                # </editor-fold>
             case 0xFE:
                 # <editor-fold desc="Increment Memory Absolute, X Indexed">
                 addr = self.get_abs + self.regX
@@ -801,7 +876,7 @@ class Emulation:
         # This can be skipped for one byte instructions by returning, it saves space
         self.pgmctr += 1
 
-
+# TODO: Check if I can simplify ADC/SBC to not take RegA as an argument, as well as get_abs_inx taking get_abs as an arg
 # TODO: Function to shorten length of branch instructions?
 # TODO: Implement Overflow of 16 bit addresses, double check 8 bits are also handled correctly
 
