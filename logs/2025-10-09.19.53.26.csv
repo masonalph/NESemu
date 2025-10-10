@@ -1,0 +1,11 @@
+Program Counter,Op,Reg A,Reg X,Reg Y,Fstring
+32768,76,0,0,0,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32772,162,0,0,0,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32774,232,0,1,0,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32775,134,0,2,0,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32777,202,0,2,0,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32778,138,0,1,0,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32779,168,1,1,0,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32780,132,1,1,1,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32782,186,1,1,1,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>
+32784,2,1,255,1,<bound method Emulation.build_Fstring of <Emulation.Emulation object at 0x000001474C75A300>>

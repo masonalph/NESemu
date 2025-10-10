@@ -1,5 +1,7 @@
 from customTypes import *
 import math
+import csv
+from pathlib import Path
 
 class Emulation:
     def __init__(self, filepath, debug=False):
@@ -38,14 +40,13 @@ class Emulation:
         else:
             self.pgmctr = self.addSpace[0xFFFC] + self.addSpace[0xFFFD] * 256
 
-    def run_emu(self): # Primary event loop
+    def run_emu(self, log): # Primary event loop
+        logger = csv.writer(log)
+        logger.writerow(["Program Counter", "Op", "Reg A", "Reg X", "Reg Y", "Fstring"])
         self.flag_InterruptDisable = True
         while not self.halt:
             self.opcode = self.addSpace[self.pgmctr]
-            if self.debug:
-                self.logger.append({"Program Counter": self.pgmctr, "Op": self.opcode,
-                                "RegA": self.regA, "RegX": self.regX, "RegY": self.regY,
-                                "Flags": self.build_Fstring()})
+            logger.writerow([self.pgmctr, self.opcode, self.regA, self.regX, self.regY, self.build_Fstring()])
             self.pgmctr += 0x1
             self.op()
 
@@ -113,12 +114,16 @@ class Emulation:
         return addr + index
     # TODO, utilize this function in indirect inclusive / exclusive?
 
-    def get_incl_indr(self, offset=self.regX):
+    def get_incl_indr(self, offset=-1):
+        if offset == -1:
+            offset = self.regX
         tlow = self.read(self.pgmctr + offset)
         thigh = self.read(self.pgmctr + offset + 1)
         return tlow + thigh*256
 
-    def get_excl_indr(self, offset=self.regY):
+    def get_excl_indr(self, offset=-1):
+        if offset == -1:
+            offset = self.regY
         # Why return 2 different values? $91 does NOT cost an additional cycle for crossing page boundaries unlike every other Exclusive Indirect Addressing,
         # so we will let the op choose whether it ones to add that extra cycle in or not
         tlow = self.read(self.read())
@@ -184,8 +189,18 @@ class Emulation:
         val += 1
         if val == 256:
             val = 0
-        self.setflags(final)
-        return final
+        self.set_flags(val)
+        return val
+
+    def cmp(self, a, b):
+        self.flag_Zero = a == b
+        self.flag_Negative = (a - b) > 127
+        self.flag_Carry = a >= b
+
+    def bit(self, input):
+        self.flag_Zero = (input & self.regA) == 0
+        self.flag_Negative = input > 127
+        self.flag_Overflow = input > 63
 
     def op(self):
         # I'M GONNA RENAME INDIRECT INDEXED ADDRESSING TO EXCLUSIVE ADDRESSING AND INDEXED INDIRECT ADDRESSING TO INCLUSIVE ADDRESSING
@@ -196,6 +211,24 @@ class Emulation:
         # These automatic increments are done in an attempt to shorten the  amount of space each op takes up, I realize this may not be best practice
         # And if it proves to be too confusing I can revisit this later
         match self.opcode:
+            case 0x00:
+                # <editor-fold desc="Break">
+                self.pgmctr += 1
+                self.push(math.floor(self.pgmctr / 256)); self.push(self.pgmctr % 256)
+                flags = self.flag_Carry
+                flags += self.flag_Zero * 2
+                flags += self.flag_InterruptDisable * 4
+                flags += self.flag_Decimal * 8
+                flags += 0x30
+                flags += self.flag_Overflow * 64
+                flags += self.flag_Negative * 128
+                self.push(flags)
+                tlow = self.read(0xFFFE)
+                thigh = self.read(0xFFFF)
+                self.pgmctr = tlow + thigh * 256
+                self.cycles += 7
+                return
+                # </editor-fold>
             case 0x01:
                 # <editor-fold desc="OR w/ Accumulator, Indirect X (Inclusive Indirect)">
                 addr = self.get_incl_indr()
@@ -239,7 +272,7 @@ class Emulation:
             case 0x09:
                 # <editor-fold desc="OR w/ Accumulator Immediate">
                 self.regA |= self.read()
-                self.setflags(self.regA); self.cycles += 2
+                self.set_flags(self.regA); self.cycles += 2
                 # </editor-fold>
             case 0x0D:
                 # <editor-fold desc="OR w/ Accumulator Absolute">
@@ -325,6 +358,12 @@ class Emulation:
                 self.set_flags(self.regA)
                 self.cycles += 6
                 # </editor-fold>
+            case 0x24:
+                # <editor-fold desc="test Bit Zero Page">
+                addr = self.read()
+                self.bit(self.read(addr))
+                self.cycles += 3
+                # </editor-fold>
             case 0x25:
                 # <editor-fold desc="AND w/ Accumulator Zero Page">
                 addr = self.read()
@@ -362,6 +401,12 @@ class Emulation:
                 self.regA = self.rol(self.regA)
                 self.cycles += 2; return
                 # </editor-fold>
+            case 0x2C:
+                # <editor-fold desc="test Bit Absolute">
+                addr = self.get_abs()
+                self.bit(self.read(addr))
+                self.cycles += 4
+                # </editor-fold>
             case 0x2D:
                 # <editor-fold desc="AND w/ Accumulator Absolute">
                 addr = self.get_abs()
@@ -397,7 +442,7 @@ class Emulation:
                 # <editor-fold desc="AND w/ Accumulator Zero Page, X Indexed">
                 addr = (self.read() + self.regX) % 256
                 self.regA &= self.read(addr)
-                self.setflags(self.regA)
+                self.set_flags(self.regA)
                 self.cycles += 4
                 # </editor-fold>
             case 0x36:
@@ -414,14 +459,14 @@ class Emulation:
                 # <editor-fold desc="AND w/ Accumulator Absolute Y Indexed">
                 addr = self.get_abs_indx(self.get_abs(), self.regY)
                 self.regA &= self.read(addr)
-                self.setflags(self.regA)
+                self.set_flags(self.regA)
                 self.cycles += 4
                 # </editor-fold>
             case 0x3D:
                 # <editor-fold desc="AND w/ Accumulator Absolute X Indexed">
                 addr = self.get_abs_indx(self.get_abs(), self.regX)
                 self.regA &= self.read(addr)
-                self.setflags(self.regA)
+                self.set_flags(self.regA)
                 self.cycles += 4
                 # </editor-fold>
             case 0x3E:
@@ -429,6 +474,24 @@ class Emulation:
                 addr = self.get_abs_indx(self.get_abs(), self.regX) # Add cycle if page boundary crossed
                 self.write(addr, rol(self.read(iaddr)))
                 self.cycles += 7
+                # </editor-fold>
+            case 0x40:
+                # <editor-fold desc="Return from Interrupt">
+                flags = self.pull()
+                tlow = self.pull; thigh = self.pull()
+                self.pgmctr = tlow + thigh * 256
+                self.flag_Negative = flags > 127
+                flags -= self.flag_Negative * 128
+                self.flag_Overflow = flags > 63
+                flags -= self.flag_Overflow * 64 - 0x30
+                self.flag_Decimal = flags > 7
+                flags -= self.flag_Decimal * 8
+                self.flag_InterruptDisable = flags > 3
+                flags -= self.flag_InterruptDisable
+                self.flag_Zero = flags > 1
+                self.flag_Carry = flag % 2 == 1
+                self.cycles += 7
+                return
                 # </editor-fold>
             case 0x41:
                 # <editor-fold desc="EOR w/ Accumulator Indirect, X Indexed (Inclusive Indirect)">
@@ -742,7 +805,7 @@ class Emulation:
                 # </editor-fold>
             case 0xBA:
                 # <editor-fold desc="Transfer Stack Pointer to X">
-                self.regX = self.pop()
+                self.regX = self.pull()
                 self.set_flags(self.regX)
                 # </editor-fold>
             case 0xB8:
@@ -750,20 +813,38 @@ class Emulation:
                 self.flag_Overflow = False; self.cycles += 2
                 return
                 # </editor-fold>
-            case 0xCA:
-                # <editor-fold desc="Decrement X">
-                self.regX -= 1; self.cycles += 2
-                self.set_flags(self.regX); return
+            case 0xC1:
+                # <editor-fold desc="Compare with Accumulator Indirect, X Indexed (Inclusive Indirect)">
+                addr = self.get_incl_indr()
+                self.cmp(self.regA, self.read(addr))
+                self.cycles += 6
+                # </editor-fold>
+            case 0xC5:
+                # <editor-fold desc="Compare with Accumulator Zero Page">
+                addr = self.read()
+                self.cmp(self.regA, self.read())
+                self.cycles += 3
                 # </editor-fold>
             case 0xC8:
                 # <editor-fold desc="Increment Y">
                 self.regY = self.inc(self.regY)
                 self.cycles += 2; return
                 # </editor-fold>
-            case 0xD8:
-                # <editor-fold desc="Clear Decimal -- Not Used">
-                self.flag_Decimal = False; self.cycles += 2
-                return
+            case 0xC9:
+                # <editor-fold desc="Compare with Accumulator Immediate">
+                self.cmp(self.regA, self.read())
+                self.cycles += 2
+                # </editor-fold>
+            case 0xCA:
+                # <editor-fold desc="Decrement X">
+                self.regX -= 1; self.cycles += 2
+                self.set_flags(self.regX); return
+                # </editor-fold>
+            case 0xCD:
+                # <editor-fold desc="Compare with Accumulator Absolute">
+                addr = self.get_abs()
+                self.cmp(self.regA, self.read(addr))
+                self.cycles += 4
                 # </editor-fold>
             case 0xD0:
                 # <editor-fold desc="Branch on Not Equal">
@@ -775,6 +856,35 @@ class Emulation:
                         self.cycles += 1 # Branch takes extra cycle if crossing page boundary
                     self.cycles += 1 # Takes 1 additional cycles if nonzero
                 self.cycles += 2 # Takes 2 cycles no matter what
+                # </editor-fold>
+            case 0xD1:
+                # <editor-fold desc="Compare with Accumulator Indirect, Y Indexed (Exclusive Indirect)">
+                addr = self.get_incl_indr()
+                self.cmp(self.regA, self.read(addr))
+                self.cycles += 5
+                # </editor-fold>
+            case 0xD5:
+                # <editor-fold desc="Compare with Accumulator Zero Page, X Indexed">
+                addr = (self.read() + self.regX) % 256
+                self.cmp(self.regA, self.read())
+                self.cycles += 3
+                # </editor-fold>
+            case 0xD8:
+                # <editor-fold desc="Clear Decimal -- Not Used">
+                self.flag_Decimal = False; self.cycles += 2
+                return
+                # </editor-fold>
+            case 0xD9:
+                # <editor-fold desc="Compare with Accumulator Absolute, y Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regY)
+                self.cmp(self.regA, self.read(addr))
+                self.cycles += 4
+                # </editor-fold>
+            case 0xDD:
+                # <editor-fold desc="Compare with Accumulator Absolute, X Indexed">
+                addr = self.get_abs_indx(self.get_abs(), self.regX)
+                self.cmp(self.regA, self.read(addr))
+                self.cycles += 4
                 # </editor-fold>
             case 0xE1:
                 # <editor-fold desc="Subtract with Carry Indirect, X Indexed (Inclusive Indirect)">
