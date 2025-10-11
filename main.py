@@ -6,7 +6,7 @@ from pathlib import Path
 # Using pathlib for more robust path handling
 
 def main():
-    rompath = "5_Instructions1.nes"
+    rompath = "6_Instructions2.nes"
     emu_instance = Emulation(rompath, debug = True)
     timenow = datetime.datetime.now()
     timeform = "%Y-%m-%d.%H.%M.%S"
@@ -15,7 +15,11 @@ def main():
     with file.open("w", newline="") as log:
         emu_instance.run_emu(log)
         junk = emu_instance.addSpace
-        print(emu_instance.addSpace[0 : 0x000C])
+        toprint = []
+        for value in emu_instance.addSpace[0x10:0x1D]:
+            toprint.append(value)
+        output = list(map(hex, toprint))
+        print(output)
         pass
 
 
